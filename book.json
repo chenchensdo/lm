@@ -1,0 +1,39 @@
+﻿{
+    "title": "幸福绿城业务逻辑整理",
+    "description": "幸福绿城APP是绿城物业全力打造的创新社区服务模式，将有效提升社区服务能力，助力和谐社区建设。",
+    "language": "zh-cn",
+    "plugins": [
+        "disqus",
+        "github",
+        "editlink",
+        "prism",
+        "-highlight",
+        "baidu",
+        "splitter",
+        "sitemap",
+        "anchors"
+    ],
+    "pluginsConfig": {
+        "disqus": {
+            "shortName": "webpack-handbook"
+        },
+        "github": {
+            "url": "https://github.com/chenchensdo/lm"
+        },
+        "editlink": {
+            "base": "",
+            "label": "编辑本页"
+        },
+        "baidu": {
+            "token": "a9787f0ab45d5e237bab522431d0a7ec"
+        },
+        "sitemap": {
+            "hostname": "https://chenchensdo.github.io/"
+        },
+        "prism": {
+            "css": [
+                "prismjs/themes/prism-solarizedlight.css"
+            ]
+        }
+    }
+}
