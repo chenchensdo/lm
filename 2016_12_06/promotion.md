@@ -7,86 +7,208 @@
 
 > #####业务逻辑整理
 
+![](../imgs/lp.png)
+
 * 1.app端动态隐藏显示模块
 	* 1.促销场次，促销专场
 		> 技术实现
 
 		```markdown
-			1. 创建商品园区促销商品表sys_community_promotion_product(暂定)，字段
-			   包含园区id，促销场次/专场id，类型（场次或专场），商品id，促销开始时间，促销结束时
-			   间。园区id，促销id作为唯一索引。
-			2. 创建redis缓存，类型为hash，结构为community_id:促销场次/专场id集合，用于显示隐藏促
-			   销场次/专场（redis缓存中园区对应场次/战场列表存在即显示）。
-			3. 创建定时任务，一小时执行一次，查询状态正常的促销商品列表，语句如下：
-					SELECT
+			1. 创建两个redis缓存，类型为hash，结构为community_id:秒团场次/促销专场信息（促销id，
+			   开始时间，结束时间）集合，用于显示隐藏秒团场次/促销专场（redis缓存中园区对应场
+			   次/专场列表存在即显示）。
+			2. 秒团场次在场次审核通过时更新缓存，促销专场在促销专题审核通过时更新缓存，缓存更新查询语
+			   句如下：
+
+			   秒团场次：
+					SELECT DISTINCT
 						dg.id promotionId,
-						dg.type,
-						dp.id productId,
 						dg.activity_begintime,
 						dg.activity_endtime,
 						css.community_id
 					FROM
 						sys_discount_group dg
+					INNER JOIN sys_discount_topic_group dtp ON dtp.discount_group_id = dg.id
+					INNER JOIN sys_discount_topic dt ON dt.id = dtp.discount_topic_id
 					INNER JOIN sys_discount_product dp ON dp.discount_group_id = dg.id
-					AND life_status = 0
 					INNER JOIN sys_store_product sp ON sp.id = dp.product_id
 					INNER JOIN sys_store ss ON ss.id = sp.store_id
 					INNER JOIN community_store_subject css ON css.store_id = ss.id
 					WHERE
-						dg.approve_status = 1
-					AND dg.stauts <> 3
-			   将结果列表插入sys_community_promotion_product，更新方式为直接删除插入，执行完成后，
-			   查询园区对应场次专场列表去重放入redis缓存中。
+						dt.approve_status = 1
+					AND dg.type = 1
+					AND dt. STATUS <> 3
+					GROUP BY
+						css.community_id
+					ORDER BY
+						dp.activity_begintime DESC
+
+			   促销专场：
+					SELECT DISTINCT
+						dt.id promotionId,
+						dt.activity_begintime,
+						dt.activity_endtime,
+						css.community_id
+					FROM
+						sys_discount_group dg
+					INNER JOIN sys_discount_topic_group dtp ON dtp.discount_group_id = dg.id
+					INNER JOIN sys_discount_topic dt ON dt.id = dtp.discount_topic_id
+					INNER JOIN sys_discount_product dp ON dp.discount_group_id = dg.id
+					INNER JOIN sys_store_product sp ON sp.id = dp.product_id
+					INNER JOIN sys_store ss ON ss.id = sp.store_id
+					INNER JOIN community_store_subject css ON css.store_id = ss.id
+					WHERE
+						dt.approve_status = 1
+					AND dg.type = 2
+					AND dt.status <> 3
+					ORDER BY
+						dp.activity_begintime DESC
+
+			   将结果列表根据园区id分组后放入redis缓存中，更新方式为直接删除插入，查询时如果缓
+			   存已被清除，将根据上述逻辑重新生成一份，更新到缓存中。
+			3. 秒团场次查询方式为遍历缓存中的促销信息里列表，判断结束时间超过当前时间的数据下标，
+			   取后面24条数据。专题需要匹配当前时间在开始时间和结束时间之间的数据里列表。
 		```
 	* 2.分类，品类
 		> 技术实现(分类，品类实现方式一致)
 
 		```markdown
-			基础思路：创建园区商品关联表并同时创建分类/品类redis缓存（redis缓存类型为hash，结构
-					 为communityId:可显示的分类/品类id集合，园区商品表更新后同步更新缓存，如缓存
-					 被不小心清除，可实时查询园区商品表并同步到缓存中），表内存储商品即为关联园
-					 区可显示商品，定时更新表数据（商品下架，关闭，服务关闭等状态延时清除相关园
-					 区商品）。门店商品上架，批量上架，新增等操作时实时更新园区商品表。最终app调
-					 用接口时根据缓存中对应园区是否有分类/品类来显示或隐藏。
+			基础思路：创建园区商品关联表并同时创建分类/品类redis缓存（redis缓存类型为set，将分类，
+					 品类信息转为json格式存入缓存中，缓存过期时间为15分钟），表内存储商品即为关
+					 联园区可显示商品，通过特定操作触发异步更新。最终app调用接口时根据缓存中对
+					 应园区是否有分类/品类来显示或隐藏。
 
-			实现步骤：
-			1. 创建商品园区关联表，sys_community_product(暂定),字段包含园区id，商品id，
-			   分类id，品类id，园区服务id。
-			2. 定时更新表数据及redis缓存，更新逻辑为
-			   (1. 建立一个园区更新时间表sys_community_update_time(暂定)，包含园区，更新时间两个
-			   	字段，用于存储园区数据更新时间，首次执行会将所有园区插入此表，更新时间为当前时间
-			   	减一天，另起一个定时任务每10分钟检查是否存在新增园区，有新增园区则插入。
-			   (2. 每次从园区更新时间表中查询一个更新时间超过当前时间15分钟的园区，
-			       通过以下语句：
-				   	SELECT
-							p.id,
-							g.product_name,
-							g.section_id,
-							g.section_category_id,
-							msub.sub_community_id
-						FROM
-							sys_store_product p
-						INNER JOIN sys_shop_goods g ON p.goods_id = g.id
-						INNER JOIN community_store_subject msub ON g.sub_id = msub.sub_id
-						AND msub.community_id = ''
-						WHERE
-							msub.sub_status = 0
-						AND g.product_status = 0
-						AND p.product_status = 0
-				   查询该园区的所有商品信息，直接插入sys_community_product表中，更新方式为删除重
-				   新插入。
-			   (3. 更新品类缓存，根据园区商品表查询园区对应品类去重，将结果更新至品类缓存中。
-			   (4. 更新分类缓存，分类缓存除了第三步操作，还需添加一个操作，查询园区服务中服务状态
-			   	为正常的h5服务所属分类列表根据分类去重。将该列表中分类也加入到缓存中所属园区的对
-			   	应分类列表中。
-			3. 门店商品上线，批量上线，新增时实时更新园区商品表并更新缓存信息，详细逻辑与第二步基
-			   本一致，不同在于需要更新商品所属门店提供服务的所有园区。
+			更新触发点：
+					1.商家商品：商家商品名称修改，下架(下架，批量下架按钮， 在编辑页面选择下架)  
+					2.门店商品：新增，管理后台上架，管理后台批量上架， 管理后台下架，管理后台批
+					  量下架，商家助手商品上架，商家助手商品下架
+					3.服务分类：分类的关闭，开启
+					4.品类：不用管，因为品类下有商品时，不能删除
+					5.园区服务：园区服务的开启，关闭， 修改服务门店
+					6.公共服务：关闭
+					7.门店：门店的开启，关闭
+					8.商家：商家的关闭
+
+			sql语句整理：
+
+			创建园区商品表：
+				CREATE TABLE sys_community_product (
+					community_id VARCHAR (40) NOT NULL COMMENT '园区id',
+					product_id VARCHAR (40) NOT NULL COMMENT '门店商品id',
+					product_name VARCHAR (200) NOT NULL COMMENT '商品名称',
+					section_id VARCHAR (40) DEFAULT '' COMMENT 
+											'服务分类id，sys_subject_section.id',
+					section_category_id VARCHAR (40) DEFAULT '' COMMENT '服务品类id',
+					sub_community_id VARCHAR (40) NOT NULL COMMENT '园区服务id',
+					store_id VARCHAR (40) NOT NULL COMMENT '门店id',
+					update_time datetime COMMENT '更新时间'
+				) ENGINE = INNODB DEFAULT charset = utf8 COMMENT '园区商品表';
+
+				ALTER TABLE sys_community_product ADD CONSTRAINT 
+					pk_sys_community_product PRIMARY KEY (community_id, product_id);
+
+				CREATE INDEX idx_sys_community_product_id ON 
+					sys_community_product (product_id);
+
+			分类查询：
+				SELECT DISTINCT
+					ss.id,
+					ss.section_name,
+					ss.section_img
+				FROM
+					community_store_subject s
+				INNER JOIN sys_store_product p ON s.store_id = p.store_id
+				AND p.product_status = 0
+				INNER JOIN sys_shop_goods g ON p.goods_id = g.id
+				AND g.product_status = 0
+				INNER JOIN sys_subject_section ss ON g.section_id = ss.id
+				WHERE
+					s.community_id = ''
+				AND s.sub_status = 0
+				AND ss.visible = 1
+
+			商家商品名称修改
+				UPDATE sys_community_product
+				SET product_name = ''
+				WHERE
+					product_id IN ('', '', '');
+			
+			商家商品下架：
+				DELETE
+				FROM
+					sys_community_product
+				WHERE
+					product_id IN ('', '', '');
+
+			门店商品新增，或者上架:
+				DELETE
+				FROM
+					sys_community_product
+				WHERE
+					product_id = '';
+
+				INSERT INTO sys_community_product (xxx, xxx, xxx) SELECT
+					s.community_id,
+					p.id,
+					g.product_name,
+					g.section_id,
+					g.section_category_id,
+					s.sub_community_id,
+					s.store_id,
+					now()
+				FROM
+					community_store_subject s
+				INNER JOIN sys_store_product p ON s.store_id = p.store_id
+				AND p.product_status = 0
+				INNER JOIN sys_shop_goods g ON p.goods_id = g.id
+				AND g.product_status = 0
+				INNER JOIN sys_subject_section ss ON g.section_id = ss.id
+				WHERE
+					s.sub_status = 0
+				AND ss.visible = 1
+				AND p.id = '';
+			    
+			门店商品的下架：
+				DELETE
+				FROM
+					sys_community_product
+				WHERE
+					product_id = '';
+
+			服务分类开启：
+				DELETE
+				FROM
+					sys_community_product
+				WHERE
+					section_id = '';
+
+				INSERT INTO sys_community_product (xxx, xxx, xxx) SELECT
+					s.community_id,
+					p.id,
+					g.product_name,
+					g.section_id,
+					g.section_category_id,
+					s.sub_community_id,
+					s.store_id,
+					now()
+				FROM
+					community_store_subject s
+				INNER JOIN sys_store_product p ON s.store_id = p.store_id
+				AND p.product_status = 0
+				INNER JOIN sys_shop_goods g ON p.goods_id = g.id
+				AND g.product_status = 0
+				INNER JOIN sys_subject_section ss ON g.section_id = ss.id
+				WHERE
+					s.sub_status = 0
+				AND ss.visible = 1
+				AND ss.id = '';
 		```
 
 * 2.商品名，关键词搜索
 	* 1.创建搜索关键词表sys_keyword_hot(暂定)，字段包含关键词，搜索次数，关联商品id，园区id,首次
 		搜索时间，最后搜索时间。搜索时更新此表。
 	* 2.商品名搜索改为园区商品表。
+
 
 * 3.商圈首页，热门商品排序逻辑整理
 	* 1.将热门商品，普通商品查询分为两个接口，创建一个用于存储热门商品的redis，类型为hash，
@@ -116,4 +238,6 @@
 * 2.促销信息延时显示
 
 * 3.商品查询语句调整，分类/品类商品关联园区商品表，促销商品关联园区促销商品表
+
+![](../imgs/zb.png)
 
